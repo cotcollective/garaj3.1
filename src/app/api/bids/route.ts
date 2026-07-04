@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import { getSupabaseAdmin } from "@/lib/supabase/admin";
 
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
-
-export async function GET(req: NextRequest) {
+const supabase = getSupabaseAdmin();export async function GET(req: NextRequest) {
   const consultation_id = req.nextUrl.searchParams.get('consultation_id')
   const garage_id = req.nextUrl.searchParams.get('garage_id')
   
