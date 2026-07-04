@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { SupabaseNotConfiguredError } from "@/lib/supabase/admin";
 
 const supabase = getSupabaseAdmin();export async function POST(req: NextRequest) {
   try {
@@ -29,6 +30,12 @@ const supabase = getSupabaseAdmin();export async function POST(req: NextRequest)
     
     return NextResponse.json({ booking, room_url: roomUrl }, { status: 201 })
   } catch (e: any) {
+    if (e instanceof SupabaseNotConfiguredError) {
+      return NextResponse.json(
+        { error: "Supabase not configured", message: e.message, fix: "Add env vars to Netlify dashboard" },
+        { status: 503 }
+      )
+    }
     return NextResponse.json({ error: e.message }, { status: 500 })
   }
 }

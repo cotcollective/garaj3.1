@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { SupabaseNotConfiguredError } from "@/lib/supabase/admin";
 
 const supabase = getSupabaseAdmin();
 

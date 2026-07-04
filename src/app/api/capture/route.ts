@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { SupabaseNotConfiguredError } from "@/lib/supabase/admin";
 
 const supabase = getSupabaseAdmin();export async function POST(req: NextRequest) {
   try {
@@ -35,6 +36,12 @@ const supabase = getSupabaseAdmin();export async function POST(req: NextRequest)
     
     return NextResponse.json({ consultation_id: consultation.id }, { status: 201 })
   } catch (e: any) {
+    if (e instanceof SupabaseNotConfiguredError) {
+      return NextResponse.json(
+        { error: "Supabase not configured", message: e.message, fix: "Add env vars to Netlify dashboard" },
+        { status: 503 }
+      )
+    }
     return NextResponse.json({ error: e.message }, { status: 500 })
   }
 }
@@ -80,6 +87,12 @@ export async function PATCH(req: NextRequest) {
     }
     return NextResponse.json({ success: true, consultation: data })
   } catch (e: any) {
+    if (e instanceof SupabaseNotConfiguredError) {
+      return NextResponse.json(
+        { error: "Supabase not configured", message: e.message, fix: "Add env vars to Netlify dashboard" },
+        { status: 503 }
+      )
+    }
     return NextResponse.json({ error: e.message }, { status: 500 })
   }
 }

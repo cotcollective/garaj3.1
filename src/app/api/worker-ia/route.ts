@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { SupabaseNotConfiguredError } from "@/lib/supabase/admin";
 
 const supabase = getSupabaseAdmin();export async function POST(req: Request) {
   try {
