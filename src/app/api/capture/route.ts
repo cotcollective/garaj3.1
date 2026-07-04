@@ -70,9 +70,20 @@ export async function GET(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const { consultation_id, email } = await req.json()
-    // Stocker l'email dans les métadonnées — la colonne email_captured n'existe pas encore
-    // On l'ajoutera avec la migration V2
-    return NextResponse.json({ success: true, email })
+    if (!consultation_id || !email) {
+      return NextResponse.json({ error: 'consultation_id et email requis' }, { status: 400 })
+    }
+    // email_captured column exists depuis migration 002_fix_anonymous.sql
+    const { data, error } = await supabase
+      .from('consultations')
+      .update({ email_captured: email })
+      .eq('id', consultation_id)
+      .select('id, email_captured')
+      .single()
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
+    return NextResponse.json({ success: true, consultation: data })
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 })
   }

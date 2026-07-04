@@ -44,13 +44,30 @@ export async function PATCH(req: NextRequest) {
   try {
     const { bid_id, status } = await req.json()
     const { data: bid } = await supabase.from('bids').update({ status }).eq('id', bid_id).select('*').single()
-    
+
     if (status === 'accepted' && bid) {
-      const roomUrl = `https://garaj.daily.co/${bid.consultation_id}-${bid.garage_id}`
-      await supabase.from('bookings').insert({
+      // Créer la room Daily.co via la même logique que /api/booking
+      // (mock URL si pas de DAILY_API_KEY, vraie room sinon)
+      let roomUrl = `https://garaj.daily.co/${bid.consultation_id}-${bid.garage_id}`
+      if (process.env.DAILY_API_KEY) {
+        try {
+          const room = await fetch('https://api.daily.co/v1/rooms', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${process.env.DAILY_API_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: `garaj-${bid.consultation_id}-${bid.garage_id}`.slice(0, 41),
+              properties: { enable_chat: true, start_audio_off: true }
+            })
+          }).then(r => r.json())
+          if (room.url) roomUrl = room.url
+        } catch (e) {
+          // Fallback to mock URL
+        }
+      }
+      const { data: booking } = await supabase.from('bookings').insert({
         consultation_id: bid.consultation_id, garage_id: bid.garage_id, daily_room_url: roomUrl, status: 'confirmed'
-      })
-      return NextResponse.json({ ...bid, room_url: roomUrl })
+      }).select('*').single()
+      return NextResponse.json({ ...bid, room_url: roomUrl, booking })
     }
     return NextResponse.json(bid)
   } catch (e: any) {

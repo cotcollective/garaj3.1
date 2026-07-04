@@ -1,29 +1,131 @@
 "use client";
 
 /* ------------------------------------------------------------------ */
-/*  GARAJ V3 — Garage Dashboard ONE-PAGE                              */
-/*  Route: /garage/dashboard                                           */
-/*  Structure: Stats → Lead filters → Leads scrollables → Settings    */
-/*  Mobile-first, tri chaud > tiède > froid, pas de nesting profond.  */
+/*  GARAJ V3 — Garage Dashboard                                       */
+/*  Route: /garage/dashboard?garage=<id>                              */
+/*  Fetch leads depuis /api/garages/[id]/leads (Supabase direct)      */
+/*  Si pas de garage_id, fallback sur MOCK_LEADS (mode démo)         */
 /* ------------------------------------------------------------------ */
 
-import { useState, useMemo } from "react";
+import { Suspense, useState, useMemo, useEffect, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import GarageStats from "@/components/Garage/GarageStats";
 import LeadCard from "@/components/Garage/LeadCard";
-import { MOCK_LEADS, MOCK_GARAGE_STATS, MOCK_GARAGE_PROFILE } from "@/lib/mock-data";
+import { MOCK_LEADS } from "@/lib/mock-data";
 import type { MockLead } from "@/lib/mock-data";
 
 type FilterMode = "ALL" | "CHAUD" | "TIÈDE" | "FROID";
 
-export default function GarageDashboardPage() {
-  const [leads] = useState<MockLead[]>(MOCK_LEADS);
-  const [filter, setFilter] = useState<FilterMode>("ALL");
-  const [acceptedIds, setAcceptedIds] = useState<Set<string>>(new Set(["lead-001"]));
-  const [refusedIds, setRefusedIds] = useState<Set<string>>(new Set());
-  const [smsEnabled, setSmsEnabled] = useState(MOCK_GARAGE_PROFILE.smsEnabled);
-  const [maxLeads, setMaxLeads] = useState(MOCK_GARAGE_PROFILE.maxLeadsPerDay);
+interface ApiLead {
+  id: string;
+  consultationId: string;
+  score: "CHAUD" | "TIÈDE" | "FROID";
+  vehicle: string;
+  year: number | null;
+  symptom: string;
+  iaSummary: string;
+  specialty: string;
+  urgency: string;
+  createdAt: string;
+  email: string | null;
+  bidPlaced: boolean;
+  bidAmount: number | null;
+  bidStatus: string | null;
+  accepted: boolean;
+  clientPhone: string | null;
+}
 
-  /* Tri: CHAUD > TIÈDE > FROID, puis par date (plus récent d'abord) */
+export default function GarageDashboardPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex flex-col min-h-screen bg-garaj-cream items-center justify-center">
+        <div className="inline-block w-6 h-6 border-2 border-orange border-t-transparent rounded-full animate-spin" />
+      </div>
+    }>
+      <GarageDashboardContent />
+    </Suspense>
+  );
+}
+
+function GarageDashboardContent() {
+  const searchParams = useSearchParams();
+  const garageId = searchParams.get("garage");
+
+  const [leads, setLeads] = useState<MockLead[]>([]);
+  const [filter, setFilter] = useState<FilterMode>("ALL");
+  const [acceptedIds, setAcceptedIds] = useState<Set<string>>(new Set());
+  const [refusedIds, setRefusedIds] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [garageName, setGarageName] = useState<string>("Garage");
+
+  // Fetch leads from API
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      setLoading(true);
+      setError(null);
+
+      if (!garageId) {
+        // Fallback mode: no garage_id, use mock data
+        if (!cancelled) {
+          setLeads(MOCK_LEADS);
+          setGarageName("Garage Steph (démo)");
+          setLoading(false);
+        }
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/garages/${garageId}/leads`);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        if (cancelled) return;
+
+        setGarageName(data.garage?.garage_name || "Garage");
+        // Map ApiLead to MockLead (limited fields, but enough for display)
+        const mapped: MockLead[] = (data.leads || []).map((l: ApiLead) => ({
+          id: l.id,
+          score: l.score,
+          vehicle: l.vehicle,
+          year: l.year || 0,
+          kilometrage: 0,
+          symptom: l.symptom,
+          iaSummary: l.iaSummary,
+          iaHypotheses: [
+            { hypothesis: l.iaSummary, probability: 75, confidence: 80 },
+          ],
+          postalCode: "",
+          city: "",
+          distanceKm: 0,
+          complexity: l.urgency === "high" ? 7 : l.urgency === "medium" ? 4 : 2,
+          createdAt: l.createdAt,
+          budget: l.bidAmount ? `${l.bidAmount}$` : undefined,
+          clientPhone: l.clientPhone || "",
+          accepted: l.accepted,
+          bidPlaced: l.bidPlaced,
+          bidAmount: l.bidAmount || undefined,
+        }));
+        setLeads(mapped);
+        setLoading(false);
+      } catch (e: any) {
+        if (!cancelled) {
+          setError(e.message || "Erreur de chargement");
+          setLoading(false);
+        }
+      }
+    }
+
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [garageId]);
+
   const sorted = useMemo(() => {
     const scoreOrder: Record<string, number> = { CHAUD: 0, TIÈDE: 1, FROID: 2 };
     return [...leads]
@@ -55,10 +157,54 @@ export default function GarageDashboardPage() {
     });
   }
 
-  function handleBidSubmit(leadId: string, amount: number, delay: string) {
-    // Placeholder: plus tard, POST vers Supabase
-    console.log("Bid submitted", { leadId, amount, delay });
-  }
+  // POST une bid vers l'API
+  const handleBidSubmit = useCallback(
+    async (leadId: string, amount: number, delay: string) => {
+      if (!garageId) {
+        console.warn("Cannot submit bid: no garage_id");
+        return;
+      }
+      // Convert delay string (e.g. "Demain", "2-3 jours") to hours estimate
+      const hoursMap: Record<string, number> = {
+        "Aujourd'hui": 8,
+        Demain: 24,
+        "2-3 jours": 72,
+        "Cette semaine": 96,
+        "Semaine prochaine": 168,
+      };
+      const hours = hoursMap[delay] || 48;
+
+      try {
+        const res = await fetch("/api/bids", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            consultation_id: leadId,
+            garage_id: garageId,
+            amount_cad: amount,
+            estimated_duration_hours: hours,
+            notes: null,
+          }),
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `HTTP ${res.status}`);
+        }
+        // Marquer comme bid placed localement
+        setLeads((prev) =>
+          prev.map((l) =>
+            l.id === leadId
+              ? { ...l, bidPlaced: true, bidAmount: amount, bidDelay: delay }
+              : l
+          )
+        );
+      } catch (e: any) {
+        console.error("Bid submit failed:", e.message);
+        alert(`Erreur lors de la soumission: ${e.message}`);
+      }
+    },
+    [garageId]
+  );
 
   return (
     <div className="flex flex-col min-h-screen bg-garaj-cream">
@@ -67,11 +213,12 @@ export default function GarageDashboardPage() {
         <div className="flex items-center justify-between max-w-2xl mx-auto">
           <div>
             <h1 className="text-lg font-bold tracking-tight">
-              GARAJ — {MOCK_GARAGE_PROFILE.name}
+              GARAJ — {garageName}
             </h1>
             <p className="text-[11px] text-slate-300">
-              📍 {MOCK_GARAGE_PROFILE.city} · 🔧{" "}
-              {MOCK_GARAGE_PROFILE.specialties.join(", ")}
+              {garageId
+                ? `ID: ${garageId.slice(0, 8)}…`
+                : "Mode démo — ajoute ?garage=<id> pour le mode live"}
             </p>
           </div>
           <a
@@ -86,112 +233,107 @@ export default function GarageDashboardPage() {
 
       {/* ---- MAIN CONTENT ---- */}
       <main className="flex-1 max-w-2xl mx-auto w-full px-4 py-4 space-y-4">
-        {/* Stats row */}
-        <GarageStats {...MOCK_GARAGE_STATS} />
+        {error && (
+          <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+            <p className="text-sm font-semibold text-red-700">Erreur</p>
+            <p className="text-xs text-red-600 mt-1">{error}</p>
+            <p className="text-[11px] text-red-500 mt-2">
+              Si tu vois ça, vérifie que le garage_id est valide et que
+              l'endpoint /api/garages/[id]/leads répond.
+            </p>
+          </div>
+        )}
 
-        {/* Filter chips */}
-        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
-          <FilterChip
-            label={`Tous (${counts.CHAUD + counts.TIÈDE + counts.FROID})`}
-            active={filter === "ALL"}
-            onClick={() => setFilter("ALL")}
-          />
-          <FilterChip
-            label={`🔴 Chauds (${counts.CHAUD})`}
-            active={filter === "CHAUD"}
-            onClick={() => setFilter("CHAUD")}
-            color="red"
-          />
-          <FilterChip
-            label={`🟡 Tièdes (${counts.TIÈDE})`}
-            active={filter === "TIÈDE"}
-            onClick={() => setFilter("TIÈDE")}
-            color="amber"
-          />
-          <FilterChip
-            label={`🟦 Froids (${counts.FROID})`}
-            active={filter === "FROID"}
-            onClick={() => setFilter("FROID")}
-            color="blue"
-          />
-        </div>
-
-        {/* Leads list */}
-        <div className="space-y-3">
-          {sorted.length === 0 && (
-            <div className="text-center py-12 text-slate-400">
-              <p className="text-4xl mb-2">📭</p>
-              <p className="text-sm">Aucun lead pour le moment.</p>
-              <p className="text-xs mt-1">Les leads entrants apparaîtront ici.</p>
-            </div>
-          )}
-
-          {sorted.map((lead) => (
-            <LeadCard
-              key={lead.id}
-              lead={{ ...lead, accepted: acceptedIds.has(lead.id) }}
-              onAccept={handleAccept}
-              onRefuse={handleRefuse}
-              onBidSubmit={handleBidSubmit}
+        {loading ? (
+          <div className="text-center py-12 text-slate-400">
+            <div className="inline-block w-6 h-6 border-2 border-orange border-t-transparent rounded-full animate-spin mb-3" />
+            <p className="text-sm">Chargement des leads…</p>
+          </div>
+        ) : (
+          <>
+            {/* Stats row */}
+            <GarageStats
+              leadsRecus={leads.length}
+              leadsAcceptes={acceptedIds.size}
+              bidsPlaces={leads.filter((l) => l.bidPlaced).length}
+              bidsGagnes={leads.filter((l) => l.accepted).length}
+              revenusEstimes={leads
+                .filter((l) => l.bidAmount)
+                .reduce((sum, l) => sum + (l.bidAmount || 0), 0)}
+              tauxConversion={
+                leads.length > 0
+                  ? Math.round((leads.filter((l) => l.bidPlaced).length / leads.length) * 100)
+                  : 0
+              }
+              tempsReponseMoyen="—"
             />
-          ))}
-        </div>
 
-        {/* ---- QUICK SETTINGS ---- */}
-        <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-            Paramètres rapides
-          </p>
-
-          {/* SMS toggle */}
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-garaj-navy">Notifications SMS</p>
-              <p className="text-[11px] text-slate-400">
-                Recevez les leads par texto sur votre téléphone
-              </p>
-            </div>
-            <button
-              onClick={() => setSmsEnabled(!smsEnabled)}
-              className={`relative w-12 h-6 rounded-full transition-colors ${
-                smsEnabled ? "bg-garaj-orange" : "bg-slate-300"
-              }`}
-              aria-label="Toggle SMS"
-            >
-              <span
-                className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-                  smsEnabled ? "left-6" : "left-0.5"
-                }`}
+            {/* Filter chips */}
+            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+              <FilterChip
+                label={`Tous (${counts.CHAUD + counts.TIÈDE + counts.FROID})`}
+                active={filter === "ALL"}
+                onClick={() => setFilter("ALL")}
               />
-            </button>
-          </div>
-
-          {/* Max leads slider */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <p className="text-sm font-medium text-garaj-navy">Maximum leads / jour</p>
-              <span className="text-sm font-bold text-garaj-orange">{maxLeads}</span>
+              <FilterChip
+                label={`🔴 Chauds (${counts.CHAUD})`}
+                active={filter === "CHAUD"}
+                onClick={() => setFilter("CHAUD")}
+                color="red"
+              />
+              <FilterChip
+                label={`🟡 Tièdes (${counts.TIÈDE})`}
+                active={filter === "TIÈDE"}
+                onClick={() => setFilter("TIÈDE")}
+                color="amber"
+              />
+              <FilterChip
+                label={`🟦 Froids (${counts.FROID})`}
+                active={filter === "FROID"}
+                onClick={() => setFilter("FROID")}
+                color="blue"
+              />
             </div>
-            <input
-              type="range"
-              min={1}
-              max={20}
-              value={maxLeads}
-              onChange={(e) => setMaxLeads(parseInt(e.target.value, 10))}
-              className="w-full h-2 rounded-full appearance-none bg-slate-200
-                         accent-garaj-orange [&::-webkit-slider-thumb]:appearance-none
-                         [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5
-                         [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-garaj-orange
-                         [&::-webkit-slider-thumb]:shadow"
-            />
-          </div>
 
-          {/* Pause toggle (placeholder) */}
-          <button className="w-full py-2 rounded-lg border border-slate-300 text-sm
-                             font-medium text-slate-600 hover:bg-slate-50 transition-colors">
-            ⏸ Mettre le garage en pause
-          </button>
-        </div>
+            {/* Leads list */}
+            <div className="space-y-3">
+              {sorted.length === 0 && (
+                <div className="text-center py-12 text-slate-400">
+                  <p className="text-4xl mb-2">📭</p>
+                  <p className="text-sm">Aucun lead pour le moment.</p>
+                  <p className="text-xs mt-1">
+                    Les leads entrants apparaîtront ici dès qu'ils matchent vos
+                    spécialités.
+                  </p>
+                </div>
+              )}
+
+              {sorted.map((lead) => (
+                <LeadCard
+                  key={lead.id}
+                  lead={{
+                    ...lead,
+                    accepted: acceptedIds.has(lead.id) || lead.accepted,
+                  }}
+                  onAccept={handleAccept}
+                  onRefuse={handleRefuse}
+                  onBidSubmit={handleBidSubmit}
+                />
+              ))}
+            </div>
+
+            {/* ---- QUICK SETTINGS ---- */}
+            <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                Paramètres rapides
+              </p>
+
+              <div className="text-[11px] text-slate-400 italic">
+                Pause toggle + max leads/jour : à brancher Supabase (Phase E.3)
+              </div>
+            </div>
+          </>
+        )}
       </main>
     </div>
   );

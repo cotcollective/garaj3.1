@@ -3,7 +3,7 @@
 /* ------------------------------------------------------------------ */
 /*  GARAJ V3 — /room/[token]                                          */
 /*  Salle de consultation vidéo Daily.co                              */
-/*  Mode démo: iframe vers une URL mockée avec UI de fallback          */
+/*  Fetch la vraie room URL via /api/bookings/[token]                 */
 /* ------------------------------------------------------------------ */
 
 import { useParams } from "next/navigation";
@@ -14,13 +14,50 @@ export default function RoomPage() {
   const token = params?.token as string;
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [roomUrl, setRoomUrl] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
+  const [isMockRoom, setIsMockRoom] = useState(false);
 
-  // URL Daily.co (mode démo)
-  const roomUrl = token
-    ? `https://garaj.daily.co/${token}`
-    : null;
+  // Fetch real room URL from API
+  useEffect(() => {
+    if (!token) {
+      setError("Token de salle manquant.");
+      setIsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    fetch(`/api/bookings/${encodeURIComponent(token)}`)
+      .then((r) => {
+        if (!r.ok) {
+          return r.json().then((d) => {
+            throw new Error(d.error || `HTTP ${r.status}`);
+          });
+        }
+        return r.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const url = data.booking?.daily_room_url;
+        if (url) {
+          setRoomUrl(url);
+          setIsMockRoom(url.includes("garaj.daily.co"));
+        } else {
+          setError("URL de salle non disponible");
+        }
+        setIsLoading(false);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(e.message || "Erreur de chargement");
+        setIsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
 
   const handleIframeLoad = useCallback(() => {
     setIsLoading(false);
@@ -32,21 +69,6 @@ export default function RoomPage() {
       "Impossible de charger la salle vidéo. Vérifiez votre connexion internet."
     );
   }, []);
-
-  // Simuler le chargement
-  useEffect(() => {
-    if (!token) {
-      setError("Token de salle manquant.");
-      setIsLoading(false);
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      setIsLoading(false);
-    }, 2000);
-
-    return () => clearTimeout(timer);
-  }, [token]);
 
   if (!token) {
     return (
@@ -115,15 +137,22 @@ export default function RoomPage() {
         {isLoading && (
           <div className="flex-1 flex flex-col items-center justify-center text-white gap-4">
             <div className="w-12 h-12 rounded-full border-2 border-garaj-orange border-t-transparent animate-spin" />
-            <p className="text-sm text-slate-400">Connexion à la salle vidéo...</p>
+            <p className="text-sm text-slate-400">
+              Connexion à la salle vidéo...
+            </p>
           </div>
         )}
 
-        {error && (
+        {error && !isLoading && (
           <div className="flex-1 flex flex-col items-center justify-center text-white gap-4 p-4">
             <p className="text-4xl">⚠️</p>
-            <h2 className="text-lg font-semibold">Erreur de connexion</h2>
-            <p className="text-sm text-slate-400 text-center max-w-sm">{error}</p>
+            <h2 className="text-lg font-semibold">Erreur de chargement</h2>
+            <p className="text-sm text-slate-400 text-center max-w-sm">
+              {error}
+            </p>
+            <p className="text-xs text-slate-500 text-center max-w-sm">
+              Token: <span className="font-mono">{token.slice(0, 16)}...</span>
+            </p>
             <button
               onClick={() => window.location.reload()}
               className="mt-2 px-6 py-2 rounded-lg bg-garaj-orange text-white font-semibold text-sm hover:bg-garaj-orange-light transition-colors"
@@ -133,31 +162,30 @@ export default function RoomPage() {
           </div>
         )}
 
-        {!isLoading && !error && (
+        {!isLoading && !error && roomUrl && (
           <>
-            {/* Daily.co iframe (mode démo: affiché avec fallback visuel) */}
+            {/* Daily.co iframe (ou mock URL si pas de vraie room) */}
             <div className="flex-1 relative bg-black">
-              {roomUrl ? (
-                <iframe
-                  src={roomUrl}
-                  className="w-full h-full border-0"
-                  allow="camera; microphone; fullscreen; display-capture"
-                  onLoad={handleIframeLoad}
-                  onError={handleIframeError}
-                  title="Consultation vidéo GARAJ"
-                />
-              ) : (
-                <div className="flex items-center justify-center h-full">
-                  <p className="text-slate-400 text-sm">URL de salle non disponible</p>
+              <iframe
+                src={roomUrl}
+                className="w-full h-full border-0"
+                allow="camera; microphone; fullscreen; display-capture"
+                onLoad={handleIframeLoad}
+                onError={handleIframeError}
+                title="Consultation vidéo GARAJ"
+              />
+
+              {/* Badge mode démo si URL mock */}
+              {isMockRoom && (
+                <div className="absolute top-4 left-4 bg-garaj-navy/80 backdrop-blur px-3 py-1.5 rounded-lg pointer-events-none">
+                  <p className="text-[10px] text-garaj-orange font-semibold uppercase tracking-wider">
+                    Mode Démo
+                  </p>
+                  <p className="text-[9px] text-slate-300 mt-0.5">
+                    Salle de démonstration
+                  </p>
                 </div>
               )}
-
-              {/* Badge mode démo */}
-              <div className="absolute top-4 left-4 bg-garaj-navy/80 backdrop-blur px-3 py-1.5 rounded-lg pointer-events-none">
-                <p className="text-[10px] text-garaj-orange font-semibold uppercase tracking-wider">
-                  Mode Démo
-                </p>
-              </div>
 
               {/* Overlay si caméra/micro désactivés */}
               {(isMuted || isVideoOff) && (

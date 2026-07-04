@@ -8,11 +8,25 @@ const supabase = createClient(
 export async function POST(req: Request) {
   try {
     const { consultation_id } = await req.json()
-    
-    // Claim atomique: pending → processing
-    const { data: claimed, error: claimErr } = await supabase.rpc('claim_consultation', { cid: consultation_id })
-    if (claimErr || !claimed) return Response.json({ status: 'already_claimed' })
-    
+
+    // Claim atomique: pending → processing (via UPDATE conditionnel)
+    // Utilise un UPDATE WHERE status='pending' pour garantir l'atomicité côté DB
+    // (équivalent au RPC claim_pending_consultation, mais spécifique à cet ID)
+    const { data: claimedRows, error: claimErr } = await supabase
+      .from('consultations')
+      .update({ ai_status: 'processing' })
+      .eq('id', consultation_id)
+      .eq('ai_status', 'pending')
+      .select('id')
+
+    if (claimErr) {
+      return Response.json({ error: claimErr.message }, { status: 500 })
+    }
+    if (!claimedRows || claimedRows.length === 0) {
+      // Soit la consultation n'existe pas, soit elle n'est plus en 'pending'
+      return Response.json({ status: 'already_claimed' })
+    }
+
     const { data: consultation } = await supabase.from('consultations').select('*').eq('id', consultation_id).single()
     if (!consultation) {
       await supabase.from('consultations').update({ ai_status: 'failed' }).eq('id', consultation_id)

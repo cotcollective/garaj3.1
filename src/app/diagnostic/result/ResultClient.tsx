@@ -10,6 +10,103 @@ import { useRouter } from "next/navigation";
 import { useDiagnosticPolling } from "@/hooks/useDiagnosticPolling";
 import { HypothesisCard } from "@/components/Diagnostic/HypothesisCard";
 import { UpsellPro } from "@/components/Diagnostic/UpsellPro";
+import dynamic from "next/dynamic";
+
+/* Lazy-load GaragesMap (Leaflet = browser only) */
+const GaragesMap = dynamic(() => import("@/components/Diagnostic/GaragesMap"), {
+  ssr: false,
+  loading: () => (
+    <div className="rounded-2xl bg-slate-100 animate-pulse" style={{ height: 400 }}>
+      <div className="flex items-center justify-center h-full text-sm text-slate-400">
+        🗺️ Chargement de la carte...
+      </div>
+    </div>
+  ),
+});
+
+/* Sous-composant : liste les garages nearby + carte (Pro only) */
+function NearbyGaragesSection({ consultationId }: { consultationId: string }) {
+  const [garages, setGarages] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(`/api/garages/nearby?consultation_id=${consultationId}&limit=10`)
+      .then((r) => r.json())
+      .then((data) => {
+        setGarages(data.garages || data || []);
+        setLoading(false);
+      })
+      .catch((e) => {
+        setError(e.message);
+        setLoading(false);
+      });
+  }, [consultationId]);
+
+  if (loading) {
+    return (
+      <div className="rounded-2xl bg-slate-50 animate-pulse h-[300px] flex items-center justify-center text-sm text-slate-400">
+        Recherche des garages à proximité...
+      </div>
+    );
+  }
+
+  if (error || garages.length === 0) {
+    return (
+      <div className="rounded-2xl bg-slate-50 border border-slate-200 p-6 text-center text-sm text-slate-500">
+        <p>🗺️ Aucun garage trouvé à proximité pour le moment.</p>
+        <p className="text-xs mt-1 text-slate-400">
+          Les garages seront visibles dès qu'ils s'inscriront sur GARAJ.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <GaragesMap
+        garages={garages.map((g: any) => ({
+          id: g.id,
+          name: g.garage_name || g.name,
+          lat: g.lat,
+          lng: g.lng,
+          specialties: g.specialties || [],
+          rating: g.rating,
+          distanceKm: g.distanceKm ? Math.round(g.distanceKm * 10) / 10 : undefined,
+          phone: g.phone,
+        }))}
+        height="400px"
+      />
+
+      {/* Liste textuelle sous la carte (fallback accessibilité) */}
+      <div className="space-y-2">
+        {garages.slice(0, 5).map((g: any) => (
+          <div
+            key={g.id}
+            className="flex items-center justify-between p-3 rounded-xl bg-white border border-slate-200"
+          >
+            <div>
+              <p className="font-semibold text-navy text-sm">{g.garage_name || g.name}</p>
+              <p className="text-xs text-slate-500">
+                {(g.specialties || []).slice(0, 3).join(" · ") || "—"}
+                {g.rating && ` · ⭐ ${g.rating.toFixed(1)}`}
+                {g.distanceKm && ` · ${Math.round(g.distanceKm * 10) / 10} km`}
+              </p>
+            </div>
+            {g.phone && (
+              <a
+                href={`tel:${g.phone.replace(/\D/g, "")}`}
+                className="text-xs text-orange font-semibold hover:underline"
+              >
+                📞 Appeler
+              </a>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 interface ResultClientProps {
   consultationId: string | null;
@@ -147,10 +244,23 @@ export function ResultClient({
               </div>
               <h3 className="text-lg font-bold text-navy">Rapport Pro débloqué</h3>
               <p className="mt-1 text-sm text-navy/50">
-                Vous avez accès aux estimations de coûts complètes. Les garages près de chez vous seront bientôt disponibles.
+                Vous avez accès aux estimations de coûts complètes. Les garages près de chez vous sont ci-dessous.
               </p>
             </div>
           )}
+
+          {/* Garages nearby — apparaît dès que le diagnostic est complete */}
+          <div className="mt-10">
+            <h2 className="text-xl font-bold text-navy mb-3">
+              Garages à proximité
+            </h2>
+            <p className="text-sm text-navy/50 mb-4">
+              {plan === "express"
+                ? "Passez Pro pour voir les coordonnées et contacter les garages."
+                : "Cliquez sur un marqueur pour voir les détails et contacter le garage."}
+            </p>
+            <NearbyGaragesSection consultationId={consultationId} />
+          </div>
         </div>
       </div>
     );

@@ -1,15 +1,16 @@
 "use client";
 
 /* ------------------------------------------------------------------ */
-/*  OnboardingForm — Inscription garage 60 secondes                   */
-/*  Flow: Téléphone → Code reçu → Code postal + Spécialités           */
-/*  PAS de mot de passe. Lien magique par SMS.                        */
+/*  OnboardingForm — Inscription garage SIMPLIFIÉE (1 step)            */
+/*  PAS de SMS verification en staging — flow direct vers dashboard    */
+/*  Flow: phone + name + postal + specialties → POST /api/garages/register */
 /* ------------------------------------------------------------------ */
 
 import { useState, useRef, useEffect, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 
 /* ------ Types ------ */
-type Step = "phone" | "verify" | "details" | "done";
+type Step = "form" | "submitting" | "done";
 
 interface Speciality {
   id: string;
@@ -44,69 +45,44 @@ function formatPostal(v: string): string {
 
 /* ------ Component ------ */
 export default function OnboardingForm() {
-  const [step, setStep] = useState<Step>("phone");
+  const router = useRouter();
+
+  const [step, setStep] = useState<Step>("form");
+  const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
-  const [verificationCode, setVerificationCode] = useState(["", "", "", "", "", ""]);
   const [postalCode, setPostalCode] = useState("");
   const [selectedSpecs, setSelectedSpecs] = useState<string[]>([]);
+  const [smsEnabled, setSmsEnabled] = useState(true);
   const [error, setError] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const codeRefs = useRef<(HTMLInputElement | null)[]>([]);
-  const phoneRef = useRef<HTMLInputElement>(null);
+  const [createdGarageId, setCreatedGarageId] = useState<string | null>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (step === "phone") phoneRef.current?.focus();
+    if (step === "form") nameRef.current?.focus();
   }, [step]);
 
-  /* ---- Phone step ---- */
-  function handlePhoneSubmit(e: FormEvent) {
-    e.preventDefault();
-    const digits = phone.replace(/\D/g, "");
-    if (digits.length !== 10) {
-      setError("Entrez un numéro à 10 chiffres (ex: 514-555-0199)");
-      return;
-    }
-    setError("");
-    setStep("verify");
-  }
-
-  /* ---- Verify step ---- */
-  function handleCodeChange(index: number, value: string) {
-    if (!/^\d?$/.test(value)) return;
-    const next = [...verificationCode];
-    next[index] = value;
-    setVerificationCode(next);
-    if (value && index < 5) codeRefs.current[index + 1]?.focus();
-    if (next.every((d) => d !== "") && next.join("").length === 6) {
-      // Auto-submit quand les 6 chiffres sont entrés
-      setTimeout(() => handleVerify(next), 300);
-    }
-  }
-
-  function handleVerify(code?: string[]) {
-    const c = code || verificationCode;
-    const codeStr = c.join("");
-    if (codeStr.length < 6) {
-      setError("Entrez le code à 6 chiffres reçu par SMS");
-      return;
-    }
-    setError("");
-    setIsSubmitting(true);
-    setTimeout(() => {
-      setIsSubmitting(false);
-      setStep("details");
-    }, 800);
-  }
-
-  /* ---- Details step ---- */
+  /* ---- Specs toggle ---- */
   function toggleSpeciality(id: string) {
     setSelectedSpecs((prev) =>
       prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]
     );
   }
 
-  function handleDetailsSubmit(e: FormEvent) {
+  /* ---- Submit ---- */
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    setError("");
+
+    // Validation
+    if (!name.trim()) {
+      setError("Entrez le nom de votre garage");
+      return;
+    }
+    const digits = phone.replace(/\D/g, "");
+    if (digits.length !== 10) {
+      setError("Entrez un numéro à 10 chiffres (ex: 514-555-0199)");
+      return;
+    }
     const postal = postalCode.replace(/\s/g, "");
     if (postal.length < 6) {
       setError("Entrez un code postal valide (ex: J4K 2R1)");
@@ -116,79 +92,95 @@ export default function OnboardingForm() {
       setError("Sélectionnez au moins une spécialité");
       return;
     }
-    setError("");
-    setIsSubmitting(true);
-    setTimeout(() => {
-      setIsSubmitting(false);
-      setStep("done");
-    }, 600);
+
+    setStep("submitting");
+    try {
+      const res = await fetch("/api/garages/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          phone,
+          postalCode,
+          specialties: selectedSpecs,
+          smsEnabled,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      if (data.garage?.id) {
+        setCreatedGarageId(data.garage.id);
+        setStep("done");
+      } else {
+        // Legacy mock response — try to find the id anyway
+        setCreatedGarageId(data.id || null);
+        setStep("done");
+      }
+    } catch (e: any) {
+      setError(e.message || "Erreur lors de l'inscription");
+      setStep("form");
+    }
   }
 
-  /* ------ Render: Progress bar ------ */
-  const steps: { id: Step; label: string }[] = [
-    { id: "phone", label: "Téléphone" },
-    { id: "verify", label: "Vérification" },
-    { id: "details", label: "Profil" },
-    { id: "done", label: "Terminé" },
-  ];
-  const currentStepIdx = steps.findIndex((s) => s.id === step);
+  /* ---- RENDER: Form step ---- */
+  if (step === "form") {
+    return (
+      <div className="flex flex-col min-h-screen bg-garaj-cream">
+        <header className="px-4 py-6 text-center bg-garaj-navy text-white">
+          <h1 className="text-2xl font-bold tracking-tight">GARAJ</h1>
+          <p className="text-sm text-slate-300 mt-1">
+            Inscription garage — 30 secondes
+          </p>
+        </header>
 
-  return (
-    <div className="flex flex-col min-h-screen bg-garaj-cream">
-      {/* --- Header --- */}
-      <header className="px-4 py-6 text-center bg-garaj-navy text-white">
-        <h1 className="text-2xl font-bold tracking-tight">GARAJ</h1>
-        <p className="text-sm text-slate-300 mt-1">Inscription garage — 60 secondes</p>
-      </header>
-
-      {/* --- Progress dots (desktop: bar) --- */}
-      <div className="flex items-center justify-center gap-2 px-4 py-4 bg-white border-b border-slate-100">
-        {steps.map((s, i) => (
-          <div key={s.id} className="flex items-center gap-2">
-            <div
-              className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold transition-all duration-300 ${
-                i < currentStepIdx
-                  ? "bg-garaj-green text-white"
-                  : i === currentStepIdx
-                  ? "bg-garaj-orange text-white ring-2 ring-garaj-orange/30"
-                  : "bg-slate-100 text-slate-400"
-              }`}
-            >
-              {i < currentStepIdx ? "✓" : i + 1}
-            </div>
-            <span className="hidden sm:inline text-xs text-slate-500">{s.label}</span>
-            {i < steps.length - 1 && (
-              <div
-                className={`hidden sm:block w-8 h-0.5 ${
-                  i < currentStepIdx ? "bg-garaj-green" : "bg-slate-200"
-                }`}
-              />
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* --- Main content area --- */}
-      <main className="flex-1 flex flex-col items-center justify-center px-4 py-8 max-w-md mx-auto w-full">
-        {/* ---- STEP 1: Phone ---- */}
-        {step === "phone" && (
-          <form onSubmit={handlePhoneSubmit} className="w-full space-y-6 animate-fade-in">
-            <div className="text-center space-y-2">
-              <span className="text-4xl">📱</span>
+        <main className="flex-1 px-4 py-6 max-w-md mx-auto w-full">
+          <form onSubmit={handleSubmit} className="space-y-5">
+            <div className="text-center space-y-1">
+              <span className="text-3xl">🏪</span>
               <h2 className="text-xl font-bold text-garaj-navy">
-                Votre numéro de téléphone
+                Votre garage
               </h2>
-              <p className="text-sm text-slate-500">
-                On vous enverra un code par SMS. Pas de mot de passe requis.
+              <p className="text-xs text-slate-500">
+                Pas de SMS ni de mot de passe. Vous serez en ligne après vérification admin.
               </p>
             </div>
 
+            {/* Nom du garage */}
             <div>
-              <label htmlFor="phone" className="block text-sm font-medium text-slate-600 mb-1">
+              <label
+                htmlFor="name"
+                className="block text-sm font-medium text-slate-600 mb-1"
+              >
+                Nom du garage
+              </label>
+              <input
+                ref={nameRef}
+                id="name"
+                type="text"
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  setError("");
+                }}
+                placeholder="Ex: Garage Steph Montréal"
+                className="w-full px-4 py-3 text-base rounded-xl border-2 border-slate-200 bg-white
+                           focus:border-garaj-orange focus:ring-2 focus:ring-garaj-orange/20
+                           outline-none transition-colors"
+                required
+              />
+            </div>
+
+            {/* Téléphone */}
+            <div>
+              <label
+                htmlFor="phone"
+                className="block text-sm font-medium text-slate-600 mb-1"
+              >
                 Numéro de téléphone
               </label>
               <input
-                ref={phoneRef}
                 id="phone"
                 type="tel"
                 inputMode="numeric"
@@ -198,106 +190,12 @@ export default function OnboardingForm() {
                   setError("");
                 }}
                 placeholder="514-555-0199"
-                className="w-full px-4 py-3.5 text-lg rounded-xl border-2 border-slate-200 bg-white
+                className="w-full px-4 py-3 text-base rounded-xl border-2 border-slate-200 bg-white
                            focus:border-garaj-orange focus:ring-2 focus:ring-garaj-orange/20
-                           outline-none transition-colors text-center tracking-wider"
+                           outline-none transition-colors"
                 autoComplete="tel"
+                required
               />
-            </div>
-
-            {error && (
-              <p className="text-sm text-red-500 text-center animate-shake">{error}</p>
-            )}
-
-            <button
-              type="submit"
-              disabled={phone.replace(/\D/g, "").length < 10}
-              className="w-full py-3.5 rounded-xl font-semibold text-white text-lg
-                         bg-garaj-orange hover:bg-garaj-orange-light active:scale-[0.98]
-                         transition-all disabled:opacity-40 disabled:cursor-not-allowed
-                         shadow-lg shadow-garaj-orange/20"
-            >
-              Recevoir le code SMS
-            </button>
-
-            <p className="text-xs text-center text-slate-400">
-              En continuant, vous acceptez nos conditions. Aucune carte de crédit requise.
-            </p>
-          </form>
-        )}
-
-        {/* ---- STEP 2: Verify code ---- */}
-        {step === "verify" && (
-          <div className="w-full space-y-6 animate-fade-in">
-            <div className="text-center space-y-2">
-              <span className="text-4xl">🔐</span>
-              <h2 className="text-xl font-bold text-garaj-navy">Vérifiez votre numéro</h2>
-              <p className="text-sm text-slate-500">
-                Code envoyé au <strong>{phone}</strong>
-              </p>
-            </div>
-
-            <div className="flex justify-center gap-2" role="group">
-              {verificationCode.map((digit, i) => (
-                <input
-                  key={i}
-                  ref={(el) => {
-                    codeRefs.current[i] = el;
-                  }}
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={1}
-                  value={digit}
-                  onChange={(e) => handleCodeChange(i, e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Backspace" && !digit && i > 0)
-                      codeRefs.current[i - 1]?.focus();
-                  }}
-                  className="w-12 h-14 text-2xl font-bold text-center rounded-xl
-                             border-2 border-slate-200 bg-white focus:border-garaj-orange
-                             focus:ring-2 focus:ring-garaj-orange/20 outline-none transition-colors"
-                  aria-label={`Chiffre ${i + 1}`}
-                />
-              ))}
-            </div>
-
-            {error && (
-              <p className="text-sm text-red-500 text-center animate-shake">{error}</p>
-            )}
-
-            <button
-              onClick={() => handleVerify()}
-              disabled={isSubmitting || verificationCode.join("").length < 6}
-              className="w-full py-3.5 rounded-xl font-semibold text-white text-lg
-                         bg-garaj-orange hover:bg-garaj-orange-light active:scale-[0.98]
-                         transition-all disabled:opacity-40 disabled:cursor-not-allowed
-                         shadow-lg shadow-garaj-orange/20"
-            >
-              {isSubmitting ? "Vérification..." : "Vérifier"}
-            </button>
-
-            <button
-              onClick={() => setStep("phone")}
-              className="w-full text-sm text-slate-500 hover:text-garaj-navy transition-colors"
-            >
-              ← Changer de numéro
-            </button>
-
-            <p className="text-xs text-center text-slate-400">
-              Pas reçu? Vérifiez vos SMS. Renvoi dans 30s.
-            </p>
-          </div>
-        )}
-
-        {/* ---- STEP 3: Details ---- */}
-        {step === "details" && (
-          <form onSubmit={handleDetailsSubmit} className="w-full space-y-6 animate-fade-in">
-            <div className="text-center space-y-2">
-              <span className="text-4xl">🏪</span>
-              <h2 className="text-xl font-bold text-garaj-navy">Votre garage</h2>
-              <p className="text-sm text-slate-500">
-                Dites-nous où vous êtes et ce que vous faites.
-              </p>
             </div>
 
             {/* Code postal */}
@@ -318,16 +216,20 @@ export default function OnboardingForm() {
                   setError("");
                 }}
                 placeholder="J4K 2R1"
-                className="w-full px-4 py-3 text-lg rounded-xl border-2 border-slate-200 bg-white
+                className="w-full px-4 py-3 text-base rounded-xl border-2 border-slate-200 bg-white
                            focus:border-garaj-orange focus:ring-2 focus:ring-garaj-orange/20
-                           outline-none transition-colors text-center tracking-wider uppercase"
+                           outline-none transition-colors uppercase tracking-wider"
                 autoComplete="postal-code"
+                required
               />
+              <p className="mt-1 text-xs text-slate-400">
+                Vos leads seront filtrés par proximité.
+              </p>
             </div>
 
             {/* Spécialités */}
             <fieldset>
-              <legend className="block text-sm font-medium text-slate-600 mb-3">
+              <legend className="block text-sm font-medium text-slate-600 mb-2">
                 Spécialités <span className="text-garaj-orange">*</span>
               </legend>
               <div className="grid grid-cols-2 gap-2">
@@ -338,7 +240,7 @@ export default function OnboardingForm() {
                       key={spec.id}
                       type="button"
                       onClick={() => toggleSpeciality(spec.id)}
-                      className={`flex items-center gap-2 px-3 py-3 rounded-xl border-2 text-sm font-medium
+                      className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border-2 text-sm font-medium
                                   transition-all active:scale-[0.97] ${
                                     active
                                       ? "border-garaj-orange bg-garaj-orange/5 text-garaj-navy shadow-sm"
@@ -353,93 +255,135 @@ export default function OnboardingForm() {
               </div>
             </fieldset>
 
+            {/* SMS toggle */}
+            <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl">
+              <div>
+                <p className="text-sm font-medium text-slate-700">
+                  Recevoir les leads par SMS
+                </p>
+                <p className="text-xs text-slate-500">
+                  Notifications instantanées sur votre téléphone
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSmsEnabled(!smsEnabled)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  smsEnabled ? "bg-garaj-orange" : "bg-slate-300"
+                }`}
+                role="switch"
+                aria-checked={smsEnabled}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    smsEnabled ? "translate-x-6" : "translate-x-1"
+                  }`}
+                />
+              </button>
+            </div>
+
             {error && (
-              <p className="text-sm text-red-500 text-center animate-shake">{error}</p>
+              <p className="text-sm text-red-500 text-center animate-shake">
+                {error}
+              </p>
             )}
 
             <button
               type="submit"
-              disabled={isSubmitting || selectedSpecs.length === 0}
-              className="w-full py-3.5 rounded-xl font-semibold text-white text-lg
+              className="w-full py-3.5 rounded-xl font-semibold text-white text-base
                          bg-garaj-orange hover:bg-garaj-orange-light active:scale-[0.98]
-                         transition-all disabled:opacity-40 disabled:cursor-not-allowed
-                         shadow-lg shadow-garaj-orange/20"
+                         transition-all shadow-lg shadow-garaj-orange/20"
             >
-              {isSubmitting ? "Création..." : "Créer mon compte garage"}
+              Créer mon compte garage
             </button>
 
-            <button
-              onClick={() => setStep("phone")}
-              className="w-full text-sm text-slate-500 hover:text-garaj-navy transition-colors"
-            >
-              ← Retour
-            </button>
-          </form>
-        )}
-
-        {/* ---- STEP 4: Done ---- */}
-        {step === "done" && (
-          <div className="w-full text-center space-y-6 animate-fade-in">
-            <span className="text-6xl">🎉</span>
-            <h2 className="text-2xl font-bold text-garaj-navy">Vous êtes en ligne!</h2>
-            <p className="text-slate-500 leading-relaxed">
-              Votre garage est maintenant inscrit sur <strong>GARAJ</strong>. Vous recevrez
-              des leads par SMS directement sur votre téléphone. Pas de mot de passe — un
-              lien magique vous connecte à votre dashboard.
+            <p className="text-xs text-center text-slate-400">
+              En continuant, vous acceptez nos conditions. Aucune carte de crédit requise.
             </p>
+          </form>
+        </main>
+      </div>
+    );
+  }
 
-            <div className="bg-garaj-navy/5 rounded-xl p-4 space-y-2 text-left">
-              <p className="text-sm font-semibold text-garaj-navy">
-                📱 SMS activés au {phone}
+  /* ---- RENDER: Submitting ---- */
+  if (step === "submitting") {
+    return (
+      <div className="flex flex-col min-h-screen bg-garaj-cream items-center justify-center">
+        <div className="text-center">
+          <div className="inline-block w-10 h-10 border-4 border-orange border-t-transparent rounded-full animate-spin mb-3" />
+          <p className="text-sm text-slate-500">
+            Création de votre compte garage…
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  /* ---- RENDER: Done ---- */
+  return (
+    <div className="flex flex-col min-h-screen bg-garaj-cream">
+      <main className="flex-1 flex flex-col items-center justify-center px-4 py-8 max-w-md mx-auto w-full">
+        <div className="text-center space-y-6 animate-fade-in">
+          <span className="text-6xl">🎉</span>
+          <h2 className="text-2xl font-bold text-garaj-navy">
+            Inscription reçue !
+          </h2>
+          <p className="text-slate-500 leading-relaxed text-sm">
+            Votre garage <strong>{name}</strong> est inscrit sur GARAJ. Notre équipe
+            valide votre profil sous 24h. Vous recevrez un email à{" "}
+            <strong>{phone}</strong> quand votre compte sera activé.
+          </p>
+
+          {createdGarageId && (
+            <div className="bg-garaj-navy/5 rounded-xl p-3 text-left">
+              <p className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1">
+                ID de référence
               </p>
-              <p className="text-sm text-slate-500">
-                📍 {postalCode} — vos leads seront filtrés par proximité.
+              <p className="text-xs font-mono text-garaj-navy break-all">
+                {createdGarageId}
               </p>
-              <p className="text-sm text-slate-500">
-                🔧 {selectedSpecs.length} spécialité{selectedSpecs.length > 1 ? "s" : ""}{" "}
-                sélectionnée{selectedSpecs.length > 1 ? "s" : ""}.
+              <p className="text-[10px] text-slate-400 mt-1">
+                Gardez-le pour accéder à votre dashboard.
               </p>
             </div>
+          )}
 
-            {/* Simulated magic link button */}
+          <div className="bg-garaj-navy/5 rounded-xl p-4 space-y-2 text-left text-sm">
+            <p className="font-semibold text-garaj-navy">
+              📱 SMS activés au {phone}
+            </p>
+            <p className="text-slate-500">
+              📍 {postalCode} — vos leads seront filtrés par proximité.
+            </p>
+            <p className="text-slate-500">
+              🔧 {selectedSpecs.length} spécialité
+              {selectedSpecs.length > 1 ? "s" : ""} sélectionnée
+              {selectedSpecs.length > 1 ? "s" : ""}.
+            </p>
+          </div>
+
+          {/* Bouton dashboard si garage_id dispo */}
+          {createdGarageId && (
             <a
-              href="/garage/dashboard"
-              className="block w-full py-3.5 rounded-xl font-semibold text-white text-lg
+              href={`/garage/dashboard?garage=${createdGarageId}`}
+              className="block w-full py-3.5 rounded-xl font-semibold text-white text-base
                          bg-garaj-orange hover:bg-garaj-orange-light active:scale-[0.98]
                          transition-all shadow-lg shadow-garaj-orange/20 text-center"
             >
               Accéder à mon dashboard →
             </a>
+          )}
 
-            <p className="text-xs text-slate-400">
-              Vous recevrez un SMS avec un lien magique pour vous connecter.
-            </p>
-          </div>
-        )}
+          <a
+            href="/"
+            className="block w-full py-3 rounded-xl font-medium text-slate-600 text-sm
+                       border border-slate-200 hover:bg-slate-50 transition-colors"
+          >
+            Retour à l&apos;accueil
+          </a>
+        </div>
       </main>
     </div>
   );
-}
-
-/* ------ Keyframes inline via style tag ------ */
-const style = `
-@keyframes fade-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-@keyframes shake {
-  0%, 100% { transform: translateX(0); }
-  20% { transform: translateX(-4px); }
-  40% { transform: translateX(4px); }
-  60% { transform: translateX(-3px); }
-  80% { transform: translateX(3px); }
-}
-.animate-fade-in  { animation: fade-in 0.35s ease-out; }
-.animate-shake    { animation: shake 0.4s ease; }
-`;
-if (typeof document !== "undefined" && !document.getElementById("onboarding-keyframes")) {
-  const s = document.createElement("style");
-  s.id = "onboarding-keyframes";
-  s.textContent = style;
-  document.head.appendChild(s);
 }
